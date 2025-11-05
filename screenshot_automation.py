@@ -115,21 +115,32 @@ class APClassroomOCR:
                     const label = document.querySelector(`label[for="${input.id}"]`);
                     
                     if (label) {
-                        // Look for the answer text in lrn_contentWrapper > p
-                        const contentWrapper = label.querySelector('.lrn_contentWrapper');
+                        // Look for div.lrn-possible-answer (with hyphen)
+                        const possibleAnswer = label.querySelector('.lrn-possible-answer');
                         
-                        if (contentWrapper) {
-                            const p = contentWrapper.querySelector('p');
-                            if (p) {
-                                const text = (p.innerText || p.textContent || '').trim();
+                        if (possibleAnswer) {
+                            // Inside that, find div.lrn_contentWrapper (capital W) but NOT sr-only
+                            const contentWrappers = possibleAnswer.querySelectorAll('.lrn_contentWrapper');
+                            
+                            for (let wrapper of contentWrappers) {
+                                // Skip if parent is sr-only (screen reader only)
+                                if (wrapper.closest('.sr-only')) {
+                                    continue;
+                                }
                                 
-                                // Only add if:
-                                // 1. Text is substantial
-                                // 2. We haven't seen it before (deduplication)
-                                // 3. It's not just a letter
-                                if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
-                                    seenAnswers.add(text);
-                                    result.answers.push(text);
+                                const p = wrapper.querySelector('p');
+                                if (p) {
+                                    const text = (p.innerText || p.textContent || '').trim();
+                                    
+                                    // Only add if:
+                                    // 1. Text is substantial
+                                    // 2. We haven't seen it before (deduplication)
+                                    // 3. It's not just a letter
+                                    if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
+                                        seenAnswers.add(text);
+                                        result.answers.push(text);
+                                        break; // Found the answer for this input, move to next
+                                    }
                                 }
                             }
                         }
