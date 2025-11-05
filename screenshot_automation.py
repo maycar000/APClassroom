@@ -60,37 +60,53 @@ class APClassroomOCR:
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         time.sleep(1.5)
-    
     def extract_question_and_answers(self):
-        """
-        Extract question and answers using Learnosity-specific selectors
-        """
-        try:
-            # Wait for content to load
-            time.sleep(2)
+    """
+    Extract ONLY the currently visible question and answers
+    """
+    try:
+        # Wait for content to load
+        time.sleep(2)
+        
+        script = """
+        function extractCurrentQuestionData() {
+            let result = {question: '', answers: [], debug: {}};
             
-            script = """
-            function extractQuestionData() {
-                let result = {question: '', answers: [], debug: {}};
-                
-                // Find question using Learnosity class
-                const stimulusContent = document.querySelector('.lrn_stimulus_content');
+            // Find the CURRENTLY VISIBLE question container
+            // Look for the main question area that's currently in view
+            const questionContainers = document.querySelectorAll('.lrn_assessment');
+            let activeContainer = null;
+            
+            for (let container of questionContainers) {
+                const rect = container.getBoundingClientRect();
+                // Check if container is mostly visible in viewport
+                if (rect.top >= 0 && rect.top < window.innerHeight * 0.8) {
+                    activeContainer = container;
+                    break;
+                }
+            }
+            
+            if (!activeContainer) {
+                // Fallback: use first container
+                activeContainer = questionContainers[0];
+            }
+            
+            result.debug.containerFound = !!activeContainer;
+            
+            if (activeContainer) {
+                // Extract question from this container only
+                const stimulusContent = activeContainer.querySelector('.lrn_stimulus_content');
                 
                 if (stimulusContent) {
-                    // Get all <p> tags in the stimulus area
                     const paragraphs = stimulusContent.querySelectorAll('p');
                     
-                    // The question is usually the last <p> tag (after any images)
-                    // Or any <p> that contains a question mark
                     for (let p of paragraphs) {
                         const text = p.innerText || p.textContent || '';
                         if (text.trim().length > 20) {
-                            // Prefer paragraphs with question marks
                             if (text.includes('?') || text.includes('following')) {
                                 result.question = text.trim();
                                 break;
                             } else if (!result.question) {
-                                // Fallback to any substantial paragraph
                                 result.question = text.trim();
                             }
                         }
@@ -98,33 +114,24 @@ class APClassroomOCR:
                     
                     result.debug.foundStimulus = true;
                     result.debug.paragraphCount = paragraphs.length;
-                } else {
-                    result.debug.foundStimulus = false;
                 }
                 
-                // Find answers - USE ONLY VISIBLE ANSWER TEXT
-                // The key is to find the INPUT elements, then get their associated labels
-                // Don't filter by name - get ALL radio inputs and check if they have answer text
-                const radioInputs = document.querySelectorAll('input[type="radio"]');
-                
+                // Find answers ONLY within this active container
+                const radioInputs = activeContainer.querySelectorAll('input[type="radio"]');
                 result.debug.foundInputs = radioInputs.length;
                 
                 const seenAnswers = new Set();
                 
                 for (let input of radioInputs) {
-                    // Get the label associated with this input
                     const label = document.querySelector(`label[for="${input.id}"]`);
                     
                     if (label) {
-                        // Look for div.lrn-possible-answer (with hyphen)
                         const possibleAnswer = label.querySelector('.lrn-possible-answer');
                         
                         if (possibleAnswer) {
-                            // Inside that, find div.lrn_contentWrapper (capital W) but NOT sr-only
                             const contentWrappers = possibleAnswer.querySelectorAll('.lrn_contentWrapper');
                             
                             for (let wrapper of contentWrappers) {
-                                // Skip if parent is sr-only (screen reader only)
                                 if (wrapper.closest('.sr-only')) {
                                     continue;
                                 }
@@ -133,14 +140,10 @@ class APClassroomOCR:
                                 if (p) {
                                     const text = (p.innerText || p.textContent || '').trim();
                                     
-                                    // Only add if:
-                                    // 1. Text is substantial
-                                    // 2. We haven't seen it before (deduplication)
-                                    // 3. It's not just a letter
                                     if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
                                         seenAnswers.add(text);
                                         result.answers.push(text);
-                                        break; // Found the answer for this input, move to next
+                                        break;
                                     }
                                 }
                             }
@@ -148,52 +151,51 @@ class APClassroomOCR:
                     }
                 }
                 
-                // Limit to maximum 5 answers
                 result.answers = result.answers.slice(0, 5);
-                
                 result.debug.answerCount = result.answers.length;
                 result.debug.questionLength = result.question.length;
-                
-                return result;
             }
             
-            return extractQuestionData();
-            """
-            
-            data = self.driver.execute_script(script)
-            
-            # Debug output
-            print(f"   [DEBUG] Stimulus: {data['debug'].get('foundStimulus', False)}")
-            print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
-            print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
-            print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
-            
-            # Validate data
-            if not data['question'] or len(data['question']) < 20:
-                print(f"   ❌ Question too short or missing")
-                return None
-                
-            if not data['answers'] or len(data['answers']) < 2:
-                print(f"   ❌ Need at least 2 answers (found {len(data['answers'])})")
-                return None
-            
-            # Format output
-            formatted = f"{data['question']}\n\n"
-            
-            # Add answers with letters
-            letters = ['A', 'B', 'C', 'D', 'E']
-            for idx, ans in enumerate(data['answers'][:5]):
-                formatted += f"{letters[idx]}. {ans}\n"
-            
-            return formatted
-            
-        except Exception as e:
-            print(f"  ⚠ Extraction error: {e}")
-            import traceback
-            traceback.print_exc()
+            return result;
+        }
+        
+        return extractCurrentQuestionData();
+        """
+        
+        data = self.driver.execute_script(script)
+        
+        # Debug output
+        print(f"   [DEBUG] Container: {data['debug'].get('containerFound', False)}")
+        print(f"   [DEBUG] Stimulus: {data['debug'].get('foundStimulus', False)}")
+        print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
+        print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
+        print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
+        
+        # Validate data
+        if not data['question'] or len(data['question']) < 20:
+            print(f"   ❌ Question too short or missing")
             return None
-    
-    def run_automation(self, max_clicks, wait_time, output_folder):
+            
+        if not data['answers'] or len(data['answers']) < 2:
+            print(f"   ❌ Need at least 2 answers (found {len(data['answers'])})")
+            return None
+        
+        # Format output
+        formatted = f"{data['question']}\n\n"
+        
+        # Add answers with letters
+        letters = ['A', 'B', 'C', 'D', 'E']
+        for idx, ans in enumerate(data['answers'][:5]):
+            formatted += f"{letters[idx]}. {ans}\n"
+        
+        return formatted
+        
+    except Exception as e:
+        print(f"  ⚠ Extraction error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+        def run_automation(self, max_clicks, wait_time, output_folder):
         """Main automation loop"""
         
         # Create output folder
