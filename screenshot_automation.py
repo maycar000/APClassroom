@@ -72,29 +72,36 @@ class APClassroomOCR:
         function extractCurrentQuestionData() {
             let result = {question: '', answers: [], debug: {}};
             
-            // Find the CURRENTLY VISIBLE question container
-            // Look for the main question area that's currently in view
-            const questionContainers = document.querySelectorAll('.lrn_assessment');
+            // NEW APPROACH: Find the ACTIVE question by looking for visible containers
+            // AP Classroom uses CSS to hide inactive questions
+            const allContainers = document.querySelectorAll('.lrn-assessment-wrapper, .lrn_assessment, [data-testid*="question"]');
             let activeContainer = null;
             
-            for (let container of questionContainers) {
-                const rect = container.getBoundingClientRect();
-                // Check if container is mostly visible in viewport
-                if (rect.top >= 0 && rect.top < window.innerHeight * 0.8) {
-                    activeContainer = container;
-                    break;
+            for (let container of allContainers) {
+                const style = window.getComputedStyle(container);
+                // Check if container is actually visible (not hidden by CSS)
+                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const rect = container.getBoundingClientRect();
+                    // Additional check: element should have some size and be in reasonable position
+                    if (rect.width > 100 && rect.height > 100 && rect.top >= 0 && rect.top < 500) {
+                        activeContainer = container;
+                        break;
+                    }
                 }
             }
             
+            // Alternative: Look for the question number indicator to find current question
             if (!activeContainer) {
-                // Fallback: use first container
-                activeContainer = questionContainers[0];
+                const questionIndicator = document.querySelector('[data-testid*="question"], .lrn-question-number');
+                if (questionIndicator) {
+                    activeContainer = questionIndicator.closest('.lrn-assessment-wrapper, .lrn_assessment, .lrn-q');
+                }
             }
             
             result.debug.containerFound = !!activeContainer;
             
             if (activeContainer) {
-                // Extract question from this container only
+                // Extract question from active container only
                 const stimulusContent = activeContainer.querySelector('.lrn_stimulus_content');
                 
                 if (stimulusContent) {
@@ -116,7 +123,7 @@ class APClassroomOCR:
                     result.debug.paragraphCount = paragraphs.length;
                 }
                 
-                // Find answers ONLY within this active container
+                // Find answers ONLY within active container
                 const radioInputs = activeContainer.querySelectorAll('input[type="radio"]');
                 result.debug.foundInputs = radioInputs.length;
                 
@@ -154,6 +161,8 @@ class APClassroomOCR:
                 result.answers = result.answers.slice(0, 5);
                 result.debug.answerCount = result.answers.length;
                 result.debug.questionLength = result.question.length;
+            } else {
+                result.debug.error = "No active container found";
             }
             
             return result;
@@ -170,6 +179,9 @@ class APClassroomOCR:
         print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
         print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
         print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
+        
+        if 'error' in data['debug']:
+            print(f"   ❌ {data['debug']['error']}")
         
         # Validate data
         if not data['question'] or len(data['question']) < 20:
@@ -195,6 +207,7 @@ class APClassroomOCR:
         import traceback
         traceback.print_exc()
         return None
+        
         def run_automation(self, max_clicks, wait_time, output_folder):
         """Main automation loop"""
         
