@@ -171,6 +171,14 @@ if __name__ == "__main__":
         print(f"Navigating to: {WEBSITE_URL}")
         automation.navigate_to_url(WEBSITE_URL)
         
+        # PAUSE FOR LOGIN
+        print("\n" + "="*60)
+        print("⚠️  PLEASE LOG IN TO AP CLASSROOM NOW")
+        print("⚠️  Navigate to your assignment if needed")
+        print("⚠️  Press ENTER when you're ready to start automation...")
+        print("="*60 + "\n")
+        input()  # Wait for user to press Enter
+        
         print(f"Looking for button: {BUTTON_SELECTOR}")
         print(f"Will click {MAX_CLICKS} times with {WAIT_TIME}s wait time")
         
