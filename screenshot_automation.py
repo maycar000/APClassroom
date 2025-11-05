@@ -5,12 +5,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 import time
 import os
+import re
 
-# Try to import config, prompt user to run setup if not found
+# Try to import config, use defaults if not found
 try:
     import config
     WEBSITE_URL = config.WEBSITE_URL
@@ -22,12 +23,15 @@ try:
     OUTPUT_FOLDER = config.OUTPUT_FOLDER
     OCR_RESULTS_FILE = config.OCR_RESULTS_FILE
 except ImportError:
-    print("\n⚠ ERROR: config.py not found!")
-    print("\nPlease run the setup wizard first:")
-    print("  python setup.py")
-    print("\nOr manually create config.py with your settings.")
-    import sys
-    sys.exit(1)
+    # Default values if config.py doesn't exist
+    WEBSITE_URL = "https://example.com"
+    BUTTON_SELECTOR = "button.next"
+    SELECTOR_TYPE = "css"
+    MAX_CLICKS = 10
+    WAIT_TIME = 2
+    TESSERACT_PATH = None
+    OUTPUT_FOLDER = "screenshots"
+    OCR_RESULTS_FILE = "ocr_results.txt"
 
 class WebsiteScreenshotOCR:
     def __init__(self, driver_path=None, tesseract_path=None):
@@ -46,9 +50,10 @@ class WebsiteScreenshotOCR:
             if os.path.exists(default_path):
                 pytesseract.pytesseract.tesseract_cmd = default_path
         
-        # Set up Chrome driver
+        # Set up Chrome driver with maximized window
         options = webdriver.ChromeOptions()
         options.add_argument('--start-maximized')
+        options.add_argument('--force-device-scale-factor=1')  # Prevent scaling issues
         
         if driver_path:
             service = Service(executable_path=driver_path)
@@ -66,10 +71,125 @@ class WebsiteScreenshotOCR:
         self.driver.get(url)
         time.sleep(2)  # Wait for page to load
     
+    def preprocess_image(self, image_path):
+        """
+        Preprocess image to improve OCR accuracy
+        
+        Args:
+            image_path: Path to the image
+            
+        Returns:
+            Preprocessed PIL Image object
+        """
+        # Open image
+        image = Image.open(image_path)
+        
+        # Convert to grayscale
+        image = image.convert('L')
+        
+        # Increase contrast
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)
+        
+        # Increase sharpness
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(2.0)
+        
+        # Apply slight blur to reduce noise
+        image = image.filter(ImageFilter.MedianFilter(size=3))
+        
+        return image
+    
+    def clean_ocr_text(self, text):
+        """
+        Clean OCR text by removing special characters and fixing common OCR errors
+        
+        Args:
+            text: Raw OCR text
+            
+        Returns:
+            Cleaned text
+        """
+        # Remove circled letters/numbers (common OCR artifacts)
+        # Patterns: @, ©, ®, ⓐ, ⓑ, ⓒ, ⓓ, etc.
+        text = re.sub(r'[©®@⊕⊗⊙◉●○◎⦿⓪①②③④⑤⑥⑦⑧⑨⑩ⒶⒷⒸⒹⒺⒻⒼⒽⒾⒿⓀⓁⓂⓃⓄⓅⓆⓇⓈⓉⓊⓋⓌⓍⓎⓏ]', '', text)
+        
+        # Remove standalone special characters at start of lines
+        text = re.sub(r'^[^\w\s]+\s*', '', text, flags=re.MULTILINE)
+        
+        # Remove multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+        
+        # Remove spaces before punctuation
+        text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+        
+        # Fix common OCR errors
+        replacements = {
+            'l': 'I',  # lowercase L often misread as I in certain contexts
+            '0': 'O',  # zero vs letter O (context-dependent)
+            '|': 'I',  # pipe character
+            '§': 'S',
+            '£': 'E',
+            'ﬁ': 'fi',
+            'ﬂ': 'fl',
+        }
+        
+        # Apply replacements cautiously (only at word boundaries)
+        for old, new in replacements.items():
+            # Only replace if it looks like a mistake (e.g., |t -> It, but not in numbers)
+            if old == '|':
+                text = re.sub(r'\|(?=[a-z])', new, text)
+        
+        # Remove trailing special characters at end of lines
+        text = re.sub(r'[^\w\s.!?,;:\'\"-]+$', '', text, flags=re.MULTILINE)
+        
+        # Trim whitespace
+        text = '\n'.join(line.strip() for line in text.split('\n'))
+        
+        return text.strip()
+    
+    def scroll_and_capture(self, output_folder, iteration):
+        """
+        Capture multiple screenshots with scrolling to get complete content
+        
+        Args:
+            output_folder: Folder to save screenshots
+            iteration: Current iteration number
+            
+        Returns:
+            List of screenshot paths
+        """
+        screenshot_paths = []
+        
+        # Capture at default position
+        screenshot_path = os.path.join(output_folder, f"screenshot_{iteration}_default.png")
+        self.driver.save_screenshot(screenshot_path)
+        screenshot_paths.append(screenshot_path)
+        
+        # Get page height
+        page_height = self.driver.execute_script("return document.body.scrollHeight")
+        viewport_height = self.driver.execute_script("return window.innerHeight")
+        
+        # If page is scrollable, capture scrolled view
+        if page_height > viewport_height:
+            # Scroll down to capture bottom content
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(0.5)  # Wait for scroll
+            
+            screenshot_path_scroll = os.path.join(output_folder, f"screenshot_{iteration}_scrolled.png")
+            self.driver.save_screenshot(screenshot_path_scroll)
+            screenshot_paths.append(screenshot_path_scroll)
+            
+            # Scroll back to top
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(0.5)
+        
+        return screenshot_paths
+    
     def click_button_and_capture(self, button_selector, selector_type='css', 
                                   max_clicks=10, wait_time=1, output_folder='screenshots'):
         """
-        Click button repeatedly and capture screenshots
+        Click button repeatedly and capture screenshots with enhanced OCR
         
         Args:
             button_selector: The selector for the button (CSS, XPath, ID, etc.)
@@ -100,25 +220,37 @@ class WebsiteScreenshotOCR:
             )
             
             for i in range(max_clicks):
-                print(f"Capturing screenshot {i + 1}...")
+                print(f"Capturing question {i + 1}/{max_clicks}...")
                 
-                # Take screenshot
-                screenshot_path = os.path.join(output_folder, f"screenshot_{i + 1}.png")
-                self.driver.save_screenshot(screenshot_path)
-                self.screenshots.append(screenshot_path)
+                # Wait for content to load
+                time.sleep(wait_time)
                 
-                # Perform OCR on screenshot
-                ocr_text = self.perform_ocr(screenshot_path)
+                # Scroll to top before capturing
+                self.driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(0.5)
+                
+                # Capture screenshots (default + scrolled if needed)
+                screenshot_paths = self.scroll_and_capture(output_folder, i + 1)
+                
+                # Perform OCR on all screenshots and combine results
+                combined_text = ""
+                for screenshot_path in screenshot_paths:
+                    ocr_text = self.perform_ocr(screenshot_path)
+                    combined_text += ocr_text + "\n"
+                
+                # Clean the combined text
+                cleaned_text = self.clean_ocr_text(combined_text)
+                
                 self.ocr_results.append({
-                    'screenshot': screenshot_path,
-                    'text': ocr_text,
+                    'screenshots': screenshot_paths,
+                    'text': cleaned_text,
                     'iteration': i + 1
                 })
                 
                 # Click the button to go to next question
                 try:
                     button.click()
-                    time.sleep(wait_time)  # Wait for content to update
+                    time.sleep(0.5)  # Brief pause after click
                 except Exception as e:
                     print(f"Error clicking button: {e}")
                     break
@@ -130,7 +262,7 @@ class WebsiteScreenshotOCR:
     
     def perform_ocr(self, image_path):
         """
-        Perform OCR on a screenshot
+        Perform OCR on a screenshot with preprocessing
         
         Args:
             image_path: Path to the screenshot image
@@ -139,8 +271,13 @@ class WebsiteScreenshotOCR:
             Extracted text from the image
         """
         try:
-            image = Image.open(image_path)
-            text = pytesseract.image_to_string(image)
+            # Preprocess image
+            image = self.preprocess_image(image_path)
+            
+            # Perform OCR with custom config for better accuracy
+            custom_config = r'--oem 3 --psm 6'  # Use LSTM engine, assume uniform text block
+            text = pytesseract.image_to_string(image, config=custom_config)
+            
             return text.strip()
         except Exception as e:
             print(f"OCR error for {image_path}: {e}")
@@ -150,10 +287,13 @@ class WebsiteScreenshotOCR:
         """Save all OCR results to a text file"""
         with open(output_file, 'w', encoding='utf-8') as f:
             for result in self.ocr_results:
-                f.write(f"=== Screenshot {result['iteration']} ===\n")
-                f.write(f"File: {result['screenshot']}\n")
-                f.write(f"Text:\n{result['text']}\n")
-                f.write("\n" + "="*50 + "\n\n")
+                f.write(f"{'='*60}\n")
+                f.write(f"Question {result['iteration']}\n")
+                f.write(f"{'='*60}\n")
+                for screenshot in result['screenshots']:
+                    f.write(f"Screenshot: {screenshot}\n")
+                f.write(f"\n{result['text']}\n")
+                f.write("\n" + "="*60 + "\n\n")
         
         print(f"Results saved to {output_file}")
     
@@ -171,7 +311,7 @@ if __name__ == "__main__":
         print(f"Navigating to: {WEBSITE_URL}")
         automation.navigate_to_url(WEBSITE_URL)
         
-        # PAUSE FOR LOGIN
+        # PAUSE FOR LOGIN (Important for AP Classroom)
         print("\n" + "="*60)
         print("⚠️  PLEASE LOG IN TO AP CLASSROOM NOW")
         print("⚠️  Navigate to your assignment if needed")
@@ -201,6 +341,8 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"Error during execution: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # Clean up
         automation.cleanup()
