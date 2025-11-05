@@ -104,7 +104,8 @@ class APClassroomOCR:
                 
                 // Find answers - USE ONLY VISIBLE ANSWER TEXT
                 // The key is to find the INPUT elements, then get their associated labels
-                const radioInputs = document.querySelectorAll('input[type="radio"][name*="lrn"]');
+                // Don't filter by name - get ALL radio inputs and check if they have answer text
+                const radioInputs = document.querySelectorAll('input[type="radio"]');
                 
                 result.debug.foundInputs = radioInputs.length;
                 
