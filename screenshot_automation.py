@@ -73,128 +73,144 @@ class APClassroomOCR:
             function extractCurrentQuestionData() {
                 let result = {question: '', answers: [], debug: {}};
                 
-                // STRATEGY: Find the CURRENT question number that's active
-                const questionNumbers = document.querySelectorAll('.item-number');
-                let currentQuestionNum = null;
+                // DIRECT APPROACH: Find the currently visible question container
+                const allQuestionContainers = document.querySelectorAll('.learnosity-item, [class*="question"], .lrn-assessment-wrapper, .lrn_assessment');
+                let activeContainer = null;
                 
-                // Look for the active question number (usually has different styling)
-                for (let num of questionNumbers) {
-                    const style = window.getComputedStyle(num);
-                    // Active question might have different color, background, etc.
-                    if (style.fontWeight === 'bold' || 
-                        style.backgroundColor !== 'rgba(0, 0, 0, 0)' ||
-                        num.classList.contains('active') ||
-                        num.getAttribute('aria-current') === 'page') {
+                console.log("Total containers found:", allQuestionContainers.length);
+                
+                for (let container of allQuestionContainers) {
+                    const style = window.getComputedStyle(container);
+                    const rect = container.getBoundingClientRect();
+                    
+                    // Check if container is actually visible and has substantial size
+                    const isVisible = style.display !== 'none' && 
+                                     style.visibility !== 'hidden' && 
+                                     style.opacity !== '0' &&
+                                     rect.width > 100 && 
+                                     rect.height > 100 &&
+                                     rect.top >= 0 &&
+                                     rect.top < window.innerHeight;
+                    
+                    console.log("Container check:", {
+                        display: style.display,
+                        visibility: style.visibility,
+                        opacity: style.opacity,
+                        width: rect.width,
+                        height: rect.height,
+                        top: rect.top,
+                        isVisible: isVisible
+                    });
+                    
+                    if (isVisible) {
+                        // Additional check: container should have question content
+                        const hasStimulus = container.querySelector('.lrn_stimulus_content');
+                        const hasRadioInputs = container.querySelector('input[type="radio"]');
                         
-                        const text = num.innerText.trim();
-                        if (text && !isNaN(text)) {
-                            currentQuestionNum = parseInt(text);
+                        if (hasStimulus || hasRadioInputs) {
+                            activeContainer = container;
+                            console.log("Found active container!");
                             break;
                         }
                     }
                 }
                 
-                // Fallback: find by visibility
-                if (!currentQuestionNum) {
-                    const visibleItems = document.querySelectorAll('.learnosity-item');
-                    for (let item of visibleItems) {
-                        const style = window.getComputedStyle(item);
-                        if (style.display !== 'none' && style.visibility !== 'hidden') {
-                            // Try to extract question number from the visible item
-                            const questionNumElement = item.querySelector('.item-number');
-                            if (questionNumElement) {
-                                const text = questionNumElement.innerText.trim();
-                                if (text && !isNaN(text)) {
-                                    currentQuestionNum = parseInt(text);
+                result.debug.containerFound = !!activeContainer;
+                result.debug.totalContainers = allQuestionContainers.length;
+                
+                if (activeContainer) {
+                    // Extract question text
+                    const stimulusContent = activeContainer.querySelector('.lrn_stimulus_content');
+                    
+                    if (stimulusContent) {
+                        const paragraphs = stimulusContent.querySelectorAll('p');
+                        
+                        for (let p of paragraphs) {
+                            const text = p.innerText || p.textContent || '';
+                            if (text.trim().length > 20) {
+                                if (text.includes('?') || text.includes('following')) {
+                                    result.question = text.trim();
                                     break;
+                                } else if (!result.question) {
+                                    result.question = text.trim();
                                 }
                             }
                         }
-                    }
-                }
-                
-                result.debug.currentQuestion = currentQuestionNum;
-                result.debug.totalQuestions = questionNumbers.length;
-                
-                // Now extract content from the CURRENT question
-                if (currentQuestionNum) {
-                    // Find the question container for this number
-                    const questionContainers = document.querySelectorAll('.learnosity-item');
-                    let activeContainer = null;
-                    
-                    for (let container of questionContainers) {
-                        const questionNumElement = container.querySelector('.item-number');
-                        if (questionNumElement) {
-                            const text = questionNumElement.innerText.trim();
-                            if (text && parseInt(text) === currentQuestionNum) {
-                                activeContainer = container;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (activeContainer) {
-                        // Extract question text
-                        const stimulusContent = activeContainer.querySelector('.lrn_stimulus_content');
                         
-                        if (stimulusContent) {
-                            const paragraphs = stimulusContent.querySelectorAll('p');
-                            
-                            for (let p of paragraphs) {
-                                const text = p.innerText || p.textContent || '';
-                                if (text.trim().length > 20) {
-                                    if (text.includes('?') || text.includes('following')) {
-                                        result.question = text.trim();
-                                        break;
-                                    } else if (!result.question) {
-                                        result.question = text.trim();
-                                    }
-                                }
-                            }
-                            
-                            result.debug.foundStimulus = true;
-                            result.debug.paragraphCount = paragraphs.length;
+                        // Fallback: get any text from stimulus
+                        if (!result.question) {
+                            result.question = stimulusContent.innerText || stimulusContent.textContent || '';
+                            result.question = result.question.trim().substring(0, 200); // Limit length
                         }
                         
-                        // Extract answers from this container only
-                        const radioInputs = activeContainer.querySelectorAll('input[type="radio"]');
-                        result.debug.foundInputs = radioInputs.length;
+                        result.debug.foundStimulus = true;
+                        result.debug.paragraphCount = paragraphs.length;
+                    }
+                    
+                    // Extract answers from this container only
+                    const radioInputs = activeContainer.querySelectorAll('input[type="radio"]');
+                    result.debug.foundInputs = radioInputs.length;
+                    
+                    const seenAnswers = new Set();
+                    
+                    for (let input of radioInputs) {
+                        const label = document.querySelector(`label[for="${input.id}"]`);
                         
-                        const seenAnswers = new Set();
-                        
-                        for (let input of radioInputs) {
-                            const label = document.querySelector(`label[for="${input.id}"]`);
+                        if (label) {
+                            const possibleAnswer = label.querySelector('.lrn-possible-answer');
                             
-                            if (label) {
-                                const possibleAnswer = label.querySelector('.lrn-possible-answer');
+                            if (possibleAnswer) {
+                                const contentWrappers = possibleAnswer.querySelectorAll('.lrn_contentWrapper');
                                 
-                                if (possibleAnswer) {
-                                    const contentWrappers = possibleAnswer.querySelectorAll('.lrn_contentWrapper');
+                                for (let wrapper of contentWrappers) {
+                                    if (wrapper.closest('.sr-only')) {
+                                        continue;
+                                    }
                                     
-                                    for (let wrapper of contentWrappers) {
-                                        if (wrapper.closest('.sr-only')) {
-                                            continue;
-                                        }
+                                    const p = wrapper.querySelector('p');
+                                    if (p) {
+                                        const text = (p.innerText || p.textContent || '').trim();
                                         
-                                        const p = wrapper.querySelector('p');
-                                        if (p) {
-                                            const text = (p.innerText || p.textContent || '').trim();
-                                            
-                                            if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
-                                                seenAnswers.add(text);
-                                                result.answers.push(text);
-                                                break;
-                                            }
+                                        if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
+                                            seenAnswers.add(text);
+                                            result.answers.push(text);
+                                            break;
                                         }
                                     }
                                 }
                             }
                         }
-                        
-                        result.answers = result.answers.slice(0, 5);
-                        result.debug.answerCount = result.answers.length;
-                        result.debug.questionLength = result.question.length;
                     }
+                    
+                    result.answers = result.answers.slice(0, 5);
+                    result.debug.answerCount = result.answers.length;
+                    result.debug.questionLength = result.question.length;
+                    
+                    // Try to find question number
+                    const questionNumElement = activeContainer.querySelector('.item-number');
+                    if (questionNumElement) {
+                        const numText = questionNumElement.innerText.trim();
+                        if (numText && !isNaN(numText)) {
+                            result.debug.currentQuestion = parseInt(numText);
+                        }
+                    }
+                } else {
+                    result.debug.error = "No active container found";
+                    // Debug: log all containers for analysis
+                    result.debug.allContainers = Array.from(allQuestionContainers).map(container => {
+                        const style = window.getComputedStyle(container);
+                        const rect = container.getBoundingClientRect();
+                        return {
+                            classes: container.className,
+                            display: style.display,
+                            visibility: style.visibility,
+                            opacity: style.opacity,
+                            size: `${rect.width}x${rect.height}`,
+                            position: `top: ${rect.top}`,
+                            hasStimulus: !!container.querySelector('.lrn_stimulus_content'),
+                            hasRadio: !!container.querySelector('input[type="radio"]')
+                        };
+                    });
                 }
                 
                 return result;
@@ -206,15 +222,24 @@ class APClassroomOCR:
             data = self.driver.execute_script(script)
             
             # Debug output
+            print(f"   [DEBUG] Total containers: {data['debug'].get('totalContainers', 0)}")
+            print(f"   [DEBUG] Container found: {data['debug'].get('containerFound', False)}")
             print(f"   [DEBUG] Current question: {data['debug'].get('currentQuestion', 'Unknown')}")
-            print(f"   [DEBUG] Total questions: {data['debug'].get('totalQuestions', 0)}")
             print(f"   [DEBUG] Stimulus: {data['debug'].get('foundStimulus', False)}")
             print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
             print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
             print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
             
-            # Validate data
-            if not data['question'] or len(data['question']) < 20:
+            if 'error' in data['debug']:
+                print(f"   ❌ {data['debug']['error']}")
+                # Log detailed container info for debugging
+                if 'allContainers' in data['debug']:
+                    print(f"   [DEBUG] Container details:")
+                    for i, container in enumerate(data['debug']['allContainers'][:5]):  # Show first 5
+                        print(f"     Container {i}: {container}")
+            
+            # Validate data with more lenient criteria
+            if not data['question'] or len(data['question']) < 10:  # Reduced from 20 to 10
                 print(f"   ❌ Question too short or missing")
                 return None
                 
@@ -224,7 +249,7 @@ class APClassroomOCR:
             
             # Format output
             question_num = data['debug'].get('currentQuestion', 'Unknown')
-            formatted = f"Question {question_num}: {data['question']}\n\n"
+            formatted = f"{data['question']}\n\n"
             
             # Add answers with letters
             letters = ['A', 'B', 'C', 'D', 'E']
