@@ -40,7 +40,7 @@ class APClassroomOCR:
         # Chrome options
         options = webdriver.ChromeOptions()
         options.add_argument('--start-maximized')
-        options.add_argument('--force-device-scale-factor=1.5')  # Higher DPI
+        options.add_argument('--force-device-scale-factor=1.5')
         
         # Initialize driver
         service = Service(ChromeDriverManager().install())
@@ -48,6 +48,7 @@ class APClassroomOCR:
         self.driver.set_window_size(1920, 1080)
         
         self.ocr_results = []
+        self.last_question_text = None  # Track to avoid duplicates
     
     def navigate_to_url(self, url):
         """Navigate to website"""
@@ -59,115 +60,95 @@ class APClassroomOCR:
         WebDriverWait(self.driver, 10).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
-        time.sleep(1)
-    
-    def enhance_image(self, image_path):
-        """Enhance image for OCR"""
-        img = Image.open(image_path)
-        
-        # Convert to RGB then grayscale
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-        img = img.convert('L')
-        
-        # Scale up
-        width, height = img.size
-        scale = 2.5
-        img = img.resize((int(width * scale), int(height * scale)), Image.LANCZOS)
-        
-        # Enhance
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.5)
-        
-        enhancer = ImageEnhance.Sharpness(img)
-        img = enhancer.enhance(2.0)
-        
-        return img
-    
-    def perform_ocr(self, image_path):
-        """Perform OCR"""
-        try:
-            img = self.enhance_image(image_path)
-            config = '--oem 3 --psm 6'
-            text = pytesseract.image_to_string(img, config=config, lang='eng')
-            return text
-        except Exception as e:
-            print(f"  ⚠ OCR error: {e}")
-            return ""
-    
-    def clean_text(self, text):
-        """Clean OCR output aggressively"""
-        # Remove circled letters
-        symbols_to_remove = ['©', '®', '⊕', '⊗', '◉', '●', '○', '◎']
-        for symbol in symbols_to_remove:
-            text = text.replace(symbol, '')
-        
-        # Fix common errors
-        text = text.replace('|', 'I')
-        text = text.replace('§', 'S')
-        
-        # Remove multiple spaces
-        text = re.sub(r' +', ' ', text)
-        
-        # Keep only meaningful lines
-        lines = []
-        for line in text.split('\n'):
-            line = line.strip()
-            # Filter out garbage
-            words = re.findall(r'\b[A-Za-z]{3,}\b', line)
-            if len(words) >= 3:  # At least 3 real words
-                lines.append(line)
-        
-        return '\n'.join(lines)
+        time.sleep(1.5)
     
     def extract_question_and_answers(self):
         """
-        Extract ONLY the question text and answer choices using JavaScript
-        This avoids capturing images, headers, footers
+        Extract question text and answer choices with improved selectors
         """
         try:
-            # Wait a bit for content to load
+            # Wait longer for content to load and stabilize
             time.sleep(2)
             
-            # JavaScript to extract text content
             script = """
             function extractQuestionData() {
-                let result = {question: '', answers: []};
+                let result = {question: '', answers: [], rawAnswers: []};
                 
-                // Find the question text (usually in a div or p tag near the top)
-                // Look for elements that contain the actual question
-                const possibleQuestions = document.querySelectorAll('div, p, span');
-                for (let elem of possibleQuestions) {
-                    const text = elem.innerText || elem.textContent;
-                    // Question usually has a question mark or is substantial text
-                    if (text.includes('?') && text.length > 20 && text.length < 500) {
-                        // Make sure it's visible
-                        const rect = elem.getBoundingClientRect();
-                        if (rect.width > 0 && rect.height > 0) {
-                            result.question = text.trim();
-                            break;
+                // Method 1: Look for specific AP Classroom structure
+                // Find all radio buttons with their labels
+                const radioButtons = document.querySelectorAll('input[type="radio"]');
+                const answerSet = new Set();
+                
+                for (let radio of radioButtons) {
+                    // Get the label associated with this radio button
+                    let label = radio.closest('label');
+                    if (!label) {
+                        // Try finding label by for attribute
+                        label = document.querySelector(`label[for="${radio.id}"]`);
+                    }
+                    
+                    if (label) {
+                        let text = label.innerText || label.textContent;
+                        text = text.trim();
+                        
+                        // Clean up the text - remove "Option X," prefix
+                        text = text.replace(/^Option [A-E],\s*/i, '');
+                        text = text.replace(/^[A-E]\s+/i, '');
+                        
+                        if (text.length > 2 && !text.match(/^(mcqRadio|Crossout|bookmark)/)) {
+                            answerSet.add(text);
                         }
                     }
                 }
                 
-                // Find answer choices (look for A, B, C, D buttons or divs)
-                const answerButtons = document.querySelectorAll('[role="radio"], button[class*="answer"], div[class*="choice"]');
-                for (let btn of answerButtons) {
-                    const text = btn.innerText || btn.textContent;
-                    if (text.trim().length > 5) {  // Must have content
-                        result.answers.push(text.trim());
+                result.answers = Array.from(answerSet);
+                
+                // Method 2: Find question text
+                // Look for the main question container
+                const questionSelectors = [
+                    '[class*="question-text"]',
+                    '[class*="stem"]',
+                    '[data-test*="question"]',
+                    'div[class*="Question"] p',
+                    'main p'
+                ];
+                
+                for (let selector of questionSelectors) {
+                    const elements = document.querySelectorAll(selector);
+                    for (let elem of elements) {
+                        let text = elem.innerText || elem.textContent;
+                        text = text.trim();
+                        
+                        // Question should have decent length and proper content
+                        if (text.length > 30 && text.length < 1000) {
+                            // Avoid UI elements
+                            if (!text.match(/^(Question|Mark for Review|Highlights|bookmark)/i)) {
+                                // Check if it looks like a question
+                                if (text.includes('?') || text.includes('following') || text.includes('which')) {
+                                    result.question = text;
+                                    break;
+                                }
+                            }
+                        }
                     }
+                    if (result.question) break;
                 }
                 
-                // Fallback: look for any text starting with A, B, C, D
+                // Method 3: Fallback - look for answer structure in text
                 if (result.answers.length === 0) {
                     const allText = document.body.innerText;
                     const lines = allText.split('\\n');
+                    
                     for (let line of lines) {
                         line = line.trim();
-                        // Match lines that start with A, B, C, D, E followed by text
-                        if (/^[A-E]\\s+/.test(line) && line.length > 10) {
-                            result.answers.push(line);
+                        // Match clean answer patterns: "A Some answer text"
+                        const match = line.match(/^([A-E])\\s+(.+)$/);
+                        if (match && match[2].length > 3) {
+                            const answerText = match[2].trim();
+                            // Avoid UI noise
+                            if (!answerText.match(/^(Option|mcqRadio|Crossout|bookmark)/)) {
+                                result.answers.push(answerText);
+                            }
                         }
                     }
                 }
@@ -180,47 +161,33 @@ class APClassroomOCR:
             
             data = self.driver.execute_script(script)
             
-            # Format the output
-            formatted = ""
-            if data['question']:
-                formatted += f"QUESTION:\n{data['question']}\n\n"
+            # Check if we got valid data
+            if not data['question'] or not data['answers']:
+                return None
             
+            # Check if this is a duplicate (same as last question)
+            if self.last_question_text and data['question'] == self.last_question_text:
+                return None
+            
+            self.last_question_text = data['question']
+            
+            # Format the output cleanly
+            formatted = f"QUESTION:\n{data['question']}\n\n"
+            
+            # Add answers with letter labels if not already present
             if data['answers']:
-                formatted += "ANSWERS:\n"
-                for ans in data['answers']:
-                    formatted += f"{ans}\n"
+                letters = ['A', 'B', 'C', 'D', 'E']
+                for idx, ans in enumerate(data['answers'][:5]):  # Max 5 answers
+                    # Check if answer already starts with a letter
+                    if re.match(r'^[A-E][\.\)]\s', ans):
+                        formatted += f"{ans}\n"
+                    else:
+                        formatted += f"{letters[idx]}. {ans}\n"
             
-            return formatted if formatted else None
+            return formatted
             
         except Exception as e:
             print(f"  ⚠ JavaScript extraction failed: {e}")
-            return None
-    
-    def capture_right_panel(self, iteration, output_folder):
-        """Capture only the right panel where questions/answers appear"""
-        try:
-            # Scroll the right panel to see all answers
-            scroll_script = """
-            const rightPanel = document.querySelector('[class*="question"]') || 
-                              document.querySelector('main') || 
-                              document.querySelector('[role="main"]');
-            if (rightPanel) {
-                rightPanel.scrollTop = 0;
-                return true;
-            }
-            return false;
-            """
-            self.driver.execute_script(scroll_script)
-            time.sleep(0.5)
-            
-            # Take screenshot
-            screenshot_path = os.path.join(output_folder, f"q{iteration}.png")
-            self.driver.save_screenshot(screenshot_path)
-            
-            return screenshot_path
-            
-        except Exception as e:
-            print(f"  ⚠ Screenshot error: {e}")
             return None
     
     def run_automation(self, max_clicks, wait_time, output_folder):
@@ -237,52 +204,45 @@ class APClassroomOCR:
         }
         by_method = selector_map.get(SELECTOR_TYPE, By.CSS_SELECTOR)
         
+        successful_extractions = 0
+        
         for i in range(max_clicks):
             print(f"\n📝 Question {i + 1}/{max_clicks}")
             
-            # Wait for page to load
+            # Wait for page to load completely
             self.wait_for_load()
             time.sleep(wait_time)
             
-            # Method 1: Try JavaScript extraction (fastest and cleanest)
-            print(f"   🔍 Extracting text...")
+            # Try extraction
+            print(f"   🔍 Extracting content...")
             extracted_text = self.extract_question_and_answers()
             
             if extracted_text:
-                # Successfully extracted with JavaScript
                 self.ocr_results.append({
                     'question_num': i + 1,
                     'text': extracted_text,
                     'method': 'JavaScript'
                 })
-                print(f"   ✓ Extracted via JavaScript")
+                successful_extractions += 1
+                print(f"   ✓ Successfully extracted")
             else:
-                # Fallback: OCR from screenshot
-                print(f"   📸 Capturing screenshot...")
-                screenshot_path = self.capture_right_panel(i + 1, output_folder)
-                
-                if screenshot_path:
-                    print(f"   🔍 Running OCR...")
-                    text = self.perform_ocr(screenshot_path)
-                    cleaned = self.clean_text(text)
-                    
-                    self.ocr_results.append({
-                        'question_num': i + 1,
-                        'text': cleaned,
-                        'method': 'OCR'
-                    })
-                    print(f"   ✓ Extracted via OCR")
-                else:
-                    print(f"   ⚠ Failed to capture")
+                print(f"   ⚠ Extraction failed or duplicate detected")
+                # Still add a placeholder so question numbers stay in sync
+                self.ocr_results.append({
+                    'question_num': i + 1,
+                    'text': f"QUESTION:\n[Unable to extract question {i + 1}]\n\n",
+                    'method': 'Failed'
+                })
             
             # Click next (except on last question)
             if i < max_clicks - 1:
                 try:
+                    print(f"   ⏭ Clicking Next...")
                     next_btn = WebDriverWait(self.driver, 5).until(
                         EC.element_to_be_clickable((by_method, BUTTON_SELECTOR))
                     )
                     next_btn.click()
-                    time.sleep(1)
+                    time.sleep(2)  # Wait for transition
                 except Exception as e:
                     print(f"   ⚠ Cannot click Next: {e}")
                     break
@@ -310,7 +270,7 @@ class APClassroomOCR:
 
 def main():
     print("=" * 80)
-    print("AP CLASSROOM - QUESTIONS & ANSWERS EXTRACTOR")
+    print("AP CLASSROOM - QUESTIONS & ANSWERS EXTRACTOR (IMPROVED)")
     print("=" * 80)
     
     ocr = APClassroomOCR(tesseract_path=TESSERACT_PATH)
@@ -332,8 +292,7 @@ def main():
         print(f"\n▶ Starting extraction...")
         print(f"   Questions: {MAX_CLICKS}")
         print(f"   Wait time: {WAIT_TIME}s")
-        print(f"\n   Trying JavaScript extraction first (cleanest)")
-        print(f"   Will fall back to OCR if needed\n")
+        print(f"   Extracting via improved JavaScript selectors\n")
         
         # Run automation
         ocr.run_automation(MAX_CLICKS, WAIT_TIME, OUTPUT_FOLDER)
@@ -342,16 +301,12 @@ def main():
         ocr.save_results(OCR_RESULTS_FILE)
         
         # Summary
+        successful = sum(1 for r in ocr.ocr_results if r.get('method') == 'JavaScript')
         print("\n" + "=" * 80)
         print("✅ COMPLETE!")
         print("=" * 80)
         print(f"📄 Results: {OCR_RESULTS_FILE}")
-        print(f"✓ Processed: {len(ocr.ocr_results)} questions")
-        
-        js_count = sum(1 for r in ocr.ocr_results if r.get('method') == 'JavaScript')
-        ocr_count = sum(1 for r in ocr.ocr_results if r.get('method') == 'OCR')
-        print(f"   - JavaScript: {js_count} questions")
-        print(f"   - OCR: {ocr_count} questions")
+        print(f"✓ Successfully extracted: {successful}/{len(ocr.ocr_results)} questions")
         print("=" * 80)
         
     except Exception as e:
