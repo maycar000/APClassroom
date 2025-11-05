@@ -108,12 +108,18 @@ class APClassroomOCR:
     
     def clean_text(self, text):
         """Clean OCR output"""
-        # Remove special symbols and circled letters
-        text = re.sub(r'[©®@⊕⊗◉●○◎⓪-⑨Ⓐ-Ⓩⓐ-ⓩ]', '', text)
+        # Remove common special symbols one by one (safer than regex range)
+        symbols_to_remove = ['©', '®', '@', '⊕', '⊗', '◉', '●', '○', '◎', '⦿']
+        for symbol in symbols_to_remove:
+            text = text.replace(symbol, '')
+        
+        # Remove circled numbers and letters individually
+        circled_chars = '⓪①②③④⑤⑥⑦⑧⑨ⒶⒷⒸⒹⒺⒻⒼⒽⒾⒿⓀⓁⓂⓃⓄⓅⓆⓇⓈⓉⓊⓋⓌⓍⓎⓏⓐⓑⓒⓓⓔⓕⓖⓗⓘⓙⓚⓛⓜⓝⓞⓟⓠⓡⓢⓣⓤⓥⓦⓧⓨⓩ'
+        for char in circled_chars:
+            text = text.replace(char, '')
         
         # Fix common OCR errors
         text = text.replace('|', 'I')
-        text = text.replace('!', 'I')
         text = text.replace('§', 'S')
         text = text.replace('ﬁ', 'fi')
         text = text.replace('ﬂ', 'fl')
