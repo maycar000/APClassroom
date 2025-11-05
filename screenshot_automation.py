@@ -60,155 +60,156 @@ class APClassroomOCR:
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         time.sleep(1.5)
+    
     def extract_question_and_answers(self):
-    """
-    Extract ONLY the currently visible question and answers
-    """
-    try:
-        # Wait for content to load
-        time.sleep(2)
-        
-        script = """
-        function extractCurrentQuestionData() {
-            let result = {question: '', answers: [], debug: {}};
+        """
+        Extract ONLY the currently visible question and answers
+        """
+        try:
+            # Wait for content to load
+            time.sleep(2)
             
-            // NEW APPROACH: Find the ACTIVE question by looking for visible containers
-            // AP Classroom uses CSS to hide inactive questions
-            const allContainers = document.querySelectorAll('.lrn-assessment-wrapper, .lrn_assessment, [data-testid*="question"]');
-            let activeContainer = null;
-            
-            for (let container of allContainers) {
-                const style = window.getComputedStyle(container);
-                // Check if container is actually visible (not hidden by CSS)
-                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
-                    const rect = container.getBoundingClientRect();
-                    // Additional check: element should have some size and be in reasonable position
-                    if (rect.width > 100 && rect.height > 100 && rect.top >= 0 && rect.top < 500) {
-                        activeContainer = container;
-                        break;
-                    }
-                }
-            }
-            
-            // Alternative: Look for the question number indicator to find current question
-            if (!activeContainer) {
-                const questionIndicator = document.querySelector('[data-testid*="question"], .lrn-question-number');
-                if (questionIndicator) {
-                    activeContainer = questionIndicator.closest('.lrn-assessment-wrapper, .lrn_assessment, .lrn-q');
-                }
-            }
-            
-            result.debug.containerFound = !!activeContainer;
-            
-            if (activeContainer) {
-                // Extract question from active container only
-                const stimulusContent = activeContainer.querySelector('.lrn_stimulus_content');
+            script = """
+            function extractCurrentQuestionData() {
+                let result = {question: '', answers: [], debug: {}};
                 
-                if (stimulusContent) {
-                    const paragraphs = stimulusContent.querySelectorAll('p');
-                    
-                    for (let p of paragraphs) {
-                        const text = p.innerText || p.textContent || '';
-                        if (text.trim().length > 20) {
-                            if (text.includes('?') || text.includes('following')) {
-                                result.question = text.trim();
-                                break;
-                            } else if (!result.question) {
-                                result.question = text.trim();
-                            }
+                // NEW APPROACH: Find the ACTIVE question by looking for visible containers
+                // AP Classroom uses CSS to hide inactive questions
+                const allContainers = document.querySelectorAll('.lrn-assessment-wrapper, .lrn_assessment, [data-testid*="question"]');
+                let activeContainer = null;
+                
+                for (let container of allContainers) {
+                    const style = window.getComputedStyle(container);
+                    // Check if container is actually visible (not hidden by CSS)
+                    if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                        const rect = container.getBoundingClientRect();
+                        // Additional check: element should have some size and be in reasonable position
+                        if (rect.width > 100 && rect.height > 100 && rect.top >= 0 && rect.top < 500) {
+                            activeContainer = container;
+                            break;
                         }
                     }
-                    
-                    result.debug.foundStimulus = true;
-                    result.debug.paragraphCount = paragraphs.length;
                 }
                 
-                // Find answers ONLY within active container
-                const radioInputs = activeContainer.querySelectorAll('input[type="radio"]');
-                result.debug.foundInputs = radioInputs.length;
+                // Alternative: Look for the question number indicator to find current question
+                if (!activeContainer) {
+                    const questionIndicator = document.querySelector('[data-testid*="question"], .lrn-question-number');
+                    if (questionIndicator) {
+                        activeContainer = questionIndicator.closest('.lrn-assessment-wrapper, .lrn_assessment, .lrn-q');
+                    }
+                }
                 
-                const seenAnswers = new Set();
+                result.debug.containerFound = !!activeContainer;
                 
-                for (let input of radioInputs) {
-                    const label = document.querySelector(`label[for="${input.id}"]`);
+                if (activeContainer) {
+                    // Extract question from active container only
+                    const stimulusContent = activeContainer.querySelector('.lrn_stimulus_content');
                     
-                    if (label) {
-                        const possibleAnswer = label.querySelector('.lrn-possible-answer');
+                    if (stimulusContent) {
+                        const paragraphs = stimulusContent.querySelectorAll('p');
                         
-                        if (possibleAnswer) {
-                            const contentWrappers = possibleAnswer.querySelectorAll('.lrn_contentWrapper');
-                            
-                            for (let wrapper of contentWrappers) {
-                                if (wrapper.closest('.sr-only')) {
-                                    continue;
+                        for (let p of paragraphs) {
+                            const text = p.innerText || p.textContent || '';
+                            if (text.trim().length > 20) {
+                                if (text.includes('?') || text.includes('following')) {
+                                    result.question = text.trim();
+                                    break;
+                                } else if (!result.question) {
+                                    result.question = text.trim();
                                 }
+                            }
+                        }
+                        
+                        result.debug.foundStimulus = true;
+                        result.debug.paragraphCount = paragraphs.length;
+                    }
+                    
+                    // Find answers ONLY within active container
+                    const radioInputs = activeContainer.querySelectorAll('input[type="radio"]');
+                    result.debug.foundInputs = radioInputs.length;
+                    
+                    const seenAnswers = new Set();
+                    
+                    for (let input of radioInputs) {
+                        const label = document.querySelector(`label[for="${input.id}"]`);
+                        
+                        if (label) {
+                            const possibleAnswer = label.querySelector('.lrn-possible-answer');
+                            
+                            if (possibleAnswer) {
+                                const contentWrappers = possibleAnswer.querySelectorAll('.lrn_contentWrapper');
                                 
-                                const p = wrapper.querySelector('p');
-                                if (p) {
-                                    const text = (p.innerText || p.textContent || '').trim();
+                                for (let wrapper of contentWrappers) {
+                                    if (wrapper.closest('.sr-only')) {
+                                        continue;
+                                    }
                                     
-                                    if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
-                                        seenAnswers.add(text);
-                                        result.answers.push(text);
-                                        break;
+                                    const p = wrapper.querySelector('p');
+                                    if (p) {
+                                        const text = (p.innerText || p.textContent || '').trim();
+                                        
+                                        if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
+                                            seenAnswers.add(text);
+                                            result.answers.push(text);
+                                            break;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    
+                    result.answers = result.answers.slice(0, 5);
+                    result.debug.answerCount = result.answers.length;
+                    result.debug.questionLength = result.question.length;
+                } else {
+                    result.debug.error = "No active container found";
                 }
                 
-                result.answers = result.answers.slice(0, 5);
-                result.debug.answerCount = result.answers.length;
-                result.debug.questionLength = result.question.length;
-            } else {
-                result.debug.error = "No active container found";
+                return result;
             }
             
-            return result;
-        }
-        
-        return extractCurrentQuestionData();
-        """
-        
-        data = self.driver.execute_script(script)
-        
-        # Debug output
-        print(f"   [DEBUG] Container: {data['debug'].get('containerFound', False)}")
-        print(f"   [DEBUG] Stimulus: {data['debug'].get('foundStimulus', False)}")
-        print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
-        print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
-        print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
-        
-        if 'error' in data['debug']:
-            print(f"   ❌ {data['debug']['error']}")
-        
-        # Validate data
-        if not data['question'] or len(data['question']) < 20:
-            print(f"   ❌ Question too short or missing")
-            return None
+            return extractCurrentQuestionData();
+            """
             
-        if not data['answers'] or len(data['answers']) < 2:
-            print(f"   ❌ Need at least 2 answers (found {len(data['answers'])})")
+            data = self.driver.execute_script(script)
+            
+            # Debug output
+            print(f"   [DEBUG] Container: {data['debug'].get('containerFound', False)}")
+            print(f"   [DEBUG] Stimulus: {data['debug'].get('foundStimulus', False)}")
+            print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
+            print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
+            print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
+            
+            if 'error' in data['debug']:
+                print(f"   ❌ {data['debug']['error']}")
+            
+            # Validate data
+            if not data['question'] or len(data['question']) < 20:
+                print(f"   ❌ Question too short or missing")
+                return None
+                
+            if not data['answers'] or len(data['answers']) < 2:
+                print(f"   ❌ Need at least 2 answers (found {len(data['answers'])})")
+                return None
+            
+            # Format output
+            formatted = f"{data['question']}\n\n"
+            
+            # Add answers with letters
+            letters = ['A', 'B', 'C', 'D', 'E']
+            for idx, ans in enumerate(data['answers'][:5]):
+                formatted += f"{letters[idx]}. {ans}\n"
+            
+            return formatted
+            
+        except Exception as e:
+            print(f"  ⚠ Extraction error: {e}")
+            import traceback
+            traceback.print_exc()
             return None
-        
-        # Format output
-        formatted = f"{data['question']}\n\n"
-        
-        # Add answers with letters
-        letters = ['A', 'B', 'C', 'D', 'E']
-        for idx, ans in enumerate(data['answers'][:5]):
-            formatted += f"{letters[idx]}. {ans}\n"
-        
-        return formatted
-        
-    except Exception as e:
-        print(f"  ⚠ Extraction error: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-        
-        def run_automation(self, max_clicks, wait_time, output_folder):
+    
+    def run_automation(self, max_clicks, wait_time, output_folder):
         """Main automation loop"""
         
         # Create output folder
