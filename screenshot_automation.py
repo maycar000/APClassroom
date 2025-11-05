@@ -48,7 +48,6 @@ class APClassroomOCR:
         self.driver.set_window_size(1920, 1080)
         
         self.ocr_results = []
-        self.last_question_text = None
     
     def navigate_to_url(self, url):
         """Navigate to website"""
@@ -87,7 +86,7 @@ class APClassroomOCR:
                         const text = p.innerText || p.textContent || '';
                         if (text.trim().length > 20) {
                             // Prefer paragraphs with question marks
-                            if (text.includes('?')) {
+                            if (text.includes('?') || text.includes('following')) {
                                 result.question = text.trim();
                                 break;
                             } else if (!result.question) {
@@ -103,25 +102,42 @@ class APClassroomOCR:
                     result.debug.foundStimulus = false;
                 }
                 
-                // Find answers using Learnosity classes
-                const answerLabels = document.querySelectorAll('label.lrn-label');
+                // Find answers - USE ONLY VISIBLE ANSWER TEXT
+                // The key is to find the INPUT elements, then get their associated labels
+                const radioInputs = document.querySelectorAll('input[type="radio"][name*="lrn"]');
                 
-                result.debug.foundLabels = answerLabels.length;
+                result.debug.foundInputs = radioInputs.length;
                 
-                for (let label of answerLabels) {
-                    // Look for the answer text in lrn_contentWrapper > p
-                    const contentWrapper = label.querySelector('.lrn_contentWrapper');
+                const seenAnswers = new Set();
+                
+                for (let input of radioInputs) {
+                    // Get the label associated with this input
+                    const label = document.querySelector(`label[for="${input.id}"]`);
                     
-                    if (contentWrapper) {
-                        const p = contentWrapper.querySelector('p');
-                        if (p) {
-                            const text = (p.innerText || p.textContent || '').trim();
-                            if (text.length > 0) {
-                                result.answers.push(text);
+                    if (label) {
+                        // Look for the answer text in lrn_contentWrapper > p
+                        const contentWrapper = label.querySelector('.lrn_contentWrapper');
+                        
+                        if (contentWrapper) {
+                            const p = contentWrapper.querySelector('p');
+                            if (p) {
+                                const text = (p.innerText || p.textContent || '').trim();
+                                
+                                // Only add if:
+                                // 1. Text is substantial
+                                // 2. We haven't seen it before (deduplication)
+                                // 3. It's not just a letter
+                                if (text.length > 2 && !seenAnswers.has(text) && !/^[A-E]$/.test(text)) {
+                                    seenAnswers.add(text);
+                                    result.answers.push(text);
+                                }
                             }
                         }
                     }
                 }
+                
+                // Limit to maximum 5 answers
+                result.answers = result.answers.slice(0, 5);
                 
                 result.debug.answerCount = result.answers.length;
                 result.debug.questionLength = result.question.length;
@@ -135,26 +151,19 @@ class APClassroomOCR:
             data = self.driver.execute_script(script)
             
             # Debug output
-            print(f"   [DEBUG] Stimulus found: {data['debug'].get('foundStimulus', False)}")
-            print(f"   [DEBUG] Labels found: {data['debug'].get('foundLabels', 0)}")
-            print(f"   [DEBUG] Answers extracted: {data['debug'].get('answerCount', 0)}")
-            print(f"   [DEBUG] Question length: {data['debug'].get('questionLength', 0)}")
+            print(f"   [DEBUG] Stimulus: {data['debug'].get('foundStimulus', False)}")
+            print(f"   [DEBUG] Radio inputs: {data['debug'].get('foundInputs', 0)}")
+            print(f"   [DEBUG] Answers: {data['debug'].get('answerCount', 0)}")
+            print(f"   [DEBUG] Q length: {data['debug'].get('questionLength', 0)}")
             
             # Validate data
             if not data['question'] or len(data['question']) < 20:
-                print(f"   ❌ Question not found or too short")
+                print(f"   ❌ Question too short or missing")
                 return None
                 
             if not data['answers'] or len(data['answers']) < 2:
-                print(f"   ❌ Not enough answers found")
+                print(f"   ❌ Need at least 2 answers (found {len(data['answers'])})")
                 return None
-            
-            # Check for duplicate
-            if self.last_question_text == data['question']:
-                print(f"   ⚠ Duplicate question detected")
-                return None
-            
-            self.last_question_text = data['question']
             
             # Format output
             formatted = f"{data['question']}\n\n"
@@ -208,8 +217,8 @@ class APClassroomOCR:
                 
                 # Show preview
                 lines = extracted_text.split('\n')
-                preview = lines[0][:70] + "..." if len(lines[0]) > 70 else lines[0]
-                print(f"   📄 Preview: {preview}")
+                preview = lines[0][:60] + "..." if len(lines[0]) > 60 else lines[0]
+                print(f"   📄 {preview}")
             else:
                 print(f"   ❌ Extraction failed")
                 self.ocr_results.append({
@@ -220,16 +229,16 @@ class APClassroomOCR:
             # Click next
             if i < max_clicks - 1:
                 try:
-                    print(f"   ⏭  Clicking Next button...")
+                    print(f"   ⏭  Clicking Next...")
                     next_btn = WebDriverWait(self.driver, 5).until(
                         EC.element_to_be_clickable((by_method, BUTTON_SELECTOR))
                     )
                     next_btn.click()
                     time.sleep(2)
-                    print(f"   ✓ Moved to next question")
+                    print(f"   ✓ Next question loaded")
                 except Exception as e:
                     print(f"   ⚠ Cannot click Next: {e}")
-                    print(f"   Stopping extraction...")
+                    print(f"   Stopping...")
                     break
     
     def save_results(self, output_file):
@@ -245,7 +254,7 @@ class APClassroomOCR:
                 f.write(result['text'])
                 f.write("\n")
         
-        print(f"\n💾 Results saved to: {output_file}")
+        print(f"\n💾 Saved: {output_file}")
     
     def cleanup(self):
         """Close browser"""
@@ -254,7 +263,7 @@ class APClassroomOCR:
 
 def main():
     print("=" * 80)
-    print("AP CLASSROOM EXTRACTOR - LEARNOSITY VERSION")
+    print("AP CLASSROOM EXTRACTOR - FIXED VERSION")
     print("=" * 80)
     
     ocr = APClassroomOCR(tesseract_path=TESSERACT_PATH)
@@ -267,15 +276,15 @@ def main():
         print("\n" + "=" * 80)
         print("⚠️  SETUP:")
         print("    1. Log in to AP Classroom")
-        print("    2. Navigate to the FIRST question")
-        print("    3. Make sure question and answers are fully loaded")
-        print("    4. Press ENTER to begin extraction")
+        print("    2. Go to the FIRST question")
+        print("    3. Wait for it to fully load")
+        print("    4. Press ENTER to start")
         print("=" * 80)
         input()
         
-        print(f"\n▶  Starting extraction...")
-        print(f"    Questions to extract: {MAX_CLICKS}")
-        print(f"    Wait time: {WAIT_TIME}s\n")
+        print(f"\n▶  Starting...")
+        print(f"    Questions: {MAX_CLICKS}")
+        print(f"    Wait: {WAIT_TIME}s\n")
         
         # Run automation
         ocr.run_automation(MAX_CLICKS, WAIT_TIME, OUTPUT_FOLDER)
@@ -288,23 +297,23 @@ def main():
         failed = len(ocr.ocr_results) - successful
         
         print("\n" + "=" * 80)
-        print("✅ EXTRACTION COMPLETE!")
+        print("✅ DONE!")
         print("=" * 80)
-        print(f"📄 Output file: {OCR_RESULTS_FILE}")
-        print(f"✓ Successful: {successful}/{len(ocr.ocr_results)}")
+        print(f"📄 File: {OCR_RESULTS_FILE}")
+        print(f"✓ Success: {successful}/{len(ocr.ocr_results)}")
         if failed > 0:
-            print(f"⚠ Failed: {failed} (check output file)")
+            print(f"⚠ Failed: {failed}")
         print("=" * 80)
         
     except KeyboardInterrupt:
-        print("\n\n⚠ Extraction cancelled by user")
+        print("\n\n⚠ Cancelled")
     except Exception as e:
         print(f"\n❌ Error: {e}")
         import traceback
         traceback.print_exc()
     finally:
         ocr.cleanup()
-        print("\n👋 Browser closed")
+        print("\n👋 Closed")
 
 if __name__ == "__main__":
     main()
